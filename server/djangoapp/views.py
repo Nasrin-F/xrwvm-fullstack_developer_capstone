@@ -1,25 +1,34 @@
-# Import necessary libraries and models
-from django.shortcuts import render, redirect
+# views.py
+
 from django.http import JsonResponse
-from django.contrib.auth import logout, authenticate, login
-from django.contrib.auth.models import User
-from .models import CarMake, CarModel
-import json
-from django.views.decorators.csrf import csrf_exempt
-from .restapis import get_request, analyze_review_sentiments, post_review
-# Get an instance of a logger (optional, for debugging)
+from .restapis import get_request
 import logging
+from django.views.decorators.csrf import csrf_exempt
+
+
+# Get an instance of a logger (optional, for debugging)
 logger = logging.getLogger(__name__)
 
 # Create your views here.
-#Update the `get_dealerships` render list of dealerships all by default, particular state if state is passed
+# Updated the `get_dealerships` to handle missing data and log the response.
 def get_dealerships(request, state="All"):
-    if(state == "All"):
+    logger.info(f"Fetching dealers for state: {state}")
+
+    # If the state is 'All', use the appropriate endpoint
+    if state == "All":
         endpoint = "/fetchDealers"
     else:
-        endpoint = "/fetchDealers/"+state
+        endpoint = f"/fetchDealers/{state}"
+
+    # Fetch the dealer data from the external API
     dealerships = get_request(endpoint)
-    return JsonResponse({"status":200,"dealers":dealerships})
+    
+    if dealerships:
+        logger.info(f"Dealerships fetched successfully: {len(dealerships)} dealers found")
+        return JsonResponse({"status": 200, "dealers": dealerships})
+    else:
+        logger.error(f"No dealers found for state: {state}")
+        return JsonResponse({"status": 500, "message": "No dealers found"})
 
 # Login view to handle sign-in request
 @csrf_exempt
@@ -107,34 +116,52 @@ def get_cars(request):
         logger.error(f"Error retrieving cars: {str(e)}")
         return JsonResponse({"error": "An error occurred while fetching the car data."})
 
+# Function to get details for a specific dealer
 def get_dealer_details(request, dealer_id):
-    if(dealer_id):
-        endpoint = "/fetchDealer/"+str(dealer_id)
+    if dealer_id:
+        endpoint = f"/fetchDealer/{str(dealer_id)}"
         dealership = get_request(endpoint)
-        return JsonResponse({"status":200,"dealer":dealership})
+        if dealership:
+            logger.info(f"Dealer details fetched for dealer id {dealer_id}")
+            return JsonResponse({"status": 200, "dealer": dealership})
+        else:
+            logger.error(f"Dealer with ID {dealer_id} not found.")
+            return JsonResponse({"status": 404, "message": "Dealer not found"})
     else:
-        return JsonResponse({"status":400,"message":"Bad Request"})
+        logger.error("Bad Request: No dealer_id provided")
+        return JsonResponse({"status": 400, "message": "Bad Request"})
 
+# Function to get reviews for a specific dealer
 def get_dealer_reviews(request, dealer_id):
-    # if dealer id has been provided
-    if(dealer_id):
-        endpoint = "/fetchReviews/dealer/"+str(dealer_id)
+    if dealer_id:
+        endpoint = f"/fetchReviews/dealer/{str(dealer_id)}"
         reviews = get_request(endpoint)
-        for review_detail in reviews:
-            response = analyze_review_sentiments(review_detail['review'])
-            print(response)
-            review_detail['sentiment'] = response['sentiment']
-        return JsonResponse({"status":200,"reviews":reviews})
-    else:
-        return JsonResponse({"status":400,"message":"Bad Request"})
         
+        if reviews:
+            for review_detail in reviews:
+                response = analyze_review_sentiments(review_detail['review'])
+                review_detail['sentiment'] = response.get('sentiment', 'Unknown')
+            
+            logger.info(f"Reviews fetched for dealer {dealer_id}")
+            return JsonResponse({"status": 200, "reviews": reviews})
+        else:
+            logger.error(f"No reviews found for dealer with ID {dealer_id}")
+            return JsonResponse({"status": 404, "message": "Reviews not found"})
+    else:
+        logger.error("Bad Request: No dealer_id provided")
+        return JsonResponse({"status": 400, "message": "Bad Request"})
+
+# Function to add a review
 def add_review(request):
-    if(request.user.is_anonymous == False):
+    if not request.user.is_anonymous:
         data = json.loads(request.body)
         try:
             response = post_review(data)
-            return JsonResponse({"status":200})
-        except:
-            return JsonResponse({"status":401,"message":"Error in posting review"})
+            logger.info(f"Review posted successfully")
+            return JsonResponse({"status": 200})
+        except Exception as e:
+            logger.error(f"Error in posting review: {str(e)}")
+            return JsonResponse({"status": 401, "message": "Error in posting review"})
     else:
-        return JsonResponse({"status":403,"message":"Unauthorized"})
+        logger.error("Unauthorized user trying to post a review")
+        return JsonResponse({"status": 403, "message": "Unauthorized"})
